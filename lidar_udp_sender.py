@@ -7,7 +7,7 @@ import sys
 
 PORT = '/dev/serial0'
 BAUD_RATE = 230400
-IP = "10.239.162.133"
+IP = "192.168.0.20"
 UDP_PORT = 31415
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 print(f"connected to {IP}:{UDP_PORT}")
@@ -66,5 +66,5 @@ try:
         print(f"sent scan to {IP}")
 
 except KeyboardInterrupt:
-    print("\nExiting and closing port...")
+    print("\nExit and closed port")
     ser.close()
