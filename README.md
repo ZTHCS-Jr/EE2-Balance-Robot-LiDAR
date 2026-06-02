@@ -4,6 +4,7 @@ Raspberry Pi OS: Raspberry Pi 64 bit Lite OS
 WSL distribution: Ubuntu 22.04
 
 LiDAR datasheet: [LD19 datasheet](./LDROBOT_LD19_Development_Manual_EN_v2.5.pdf)
+(LD06: https://www.yahboom.net/xiazai/LiDar-LD06/LDROBOT_LD06_Development_manual.pdf)
 
 ## Terminal visualiser - `lidar.py`
 Parsed raw data from the lidar can be visualised in the terminal. The graph plot in the terminal will have 360 points of what can be seen by the LiDAR. The code currently is set show detections within a 2m radius with intensity of 30 or greater.
