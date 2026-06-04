@@ -68,7 +68,10 @@ def generate_launch_description():
                                 False, False, True, #trust yaw
                                 False, False, False, # ignore velocity
                                 False, False, True, # trust yaw velocity
-                                False, False, False] # ignore acceleration
+                                False, False, False], # ignore acceleration
+                # IMU is the absolute heading reference, zeroed at startup.
+                'imu0_differential': False,
+                'imu0_relative': True,
             }]
         ),
 
@@ -86,8 +89,12 @@ def generate_launch_description():
                 'scan_topic': '/scan',
                 'mode': 'mapping',
                 'map_update_interval': 0.5,
-                'minimum_travel_distance': 0.05,
-                'minimum_travel_heading': 0.05,
+                'minimum_travel_distance': 0.2,   # fewer, better-separated keyframes
+                'minimum_travel_heading': 0.2,    # (was 0.05/0.05 -> over-sampled noisy poses)
+                'minimum_time_interval': 0.2,
+                'max_laser_range': 8.0,           # match the scan range
+                'resolution': 0.05,
+                'transform_timeout': 0.3,
                 'use_scan_matching': True,
                 'use_scan_barycenter': True,
             }]

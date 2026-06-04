@@ -32,8 +32,8 @@ except Exception as e:
 def parse_packet(packet):
     # check packet size, header value, VerLen value
     if len(packet)!=47 or packet[0]!=0x54 or packet[1]!=0x2C:
-        return []
-    
+        return None, []
+
     startAngle = (packet[5] << 8 | packet[4])/100.0
     endAngle = (packet[43] << 8 | packet[42])/100.0
 
@@ -51,49 +51,62 @@ def parse_packet(packet):
         if angle >= 360.0: angle-=360.0
         points.append((math.radians(angle), distance, intensity))
 
-    return points
+    return startAngle, points
 
 time.sleep(1)
 
 try:
     scanData = {}
-    packetsRead = 0
+    prev_start_angle = None
+
+    # Integrated absolute yaw (rad). gyro_x_cal from the ESP is a calibrated,
+    # gravity-referenced yaw RATE in rad/s, so we just integrate it here where
+    # the sample timing is real (the PC's WiFi arrival jitter is unreliable).
+    yaw = 0.0
+    last_imu_t = None
 
     while True:
-        # IMU send data at 50hz
+        # Drain all buffered IMU lines, keep only the freshest rate.
+        latest_rate = None
         while imu_ser.in_waiting > 0:
             raw_line = imu_ser.readline().decode('utf-8', errors='ignore').strip()
-            
             if raw_line.startswith("IMU:"):
                 try:
-                    latest_gyro_x = float(raw_line.split(":")[1])
-                    
-                    # Package and send the IMU data IMMEDIATELY
-                    imu_payload = { "imu": { "gyro_x": latest_gyro_x } }
-                    message = json.dumps(imu_payload)
-                    sock.sendto(message.encode("utf-8"), (IP, UDP_PORT))
+                    latest_rate = float(raw_line.split(":")[1])
                 except ValueError:
-                    pass 
+                    pass
 
-        # lidar send data at 2.5hz
+        # Integrate once with the real elapsed time (robust to serial buffering).
+        if latest_rate is not None:
+            now = time.monotonic()
+            if last_imu_t is not None:
+                dt = now - last_imu_t
+                if 0.0 < dt < 0.5:
+                    yaw += latest_rate * dt
+                    yaw = math.atan2(math.sin(yaw), math.cos(yaw))  # wrap to (-pi, pi]
+            last_imu_t = now
+            imu_payload = { "imu": { "yaw": yaw, "rate": latest_rate } }
+            sock.sendto(json.dumps(imu_payload).encode("utf-8"), (IP, UDP_PORT))
+
+        # Lidar: accumulate one full revolution, then flush (no motion smear).
         if lidar_ser.in_waiting >= 47 and lidar_ser.read(1)[0] == 0x54:
             remaining = lidar_ser.read(46)
             if len(remaining) == 46:
                 packet = bytes([0x54]) + remaining
-                points = parse_packet(packet)
-                
-                for angle, radius, intensity in points:
-                    if 0 < radius < 2000 and intensity >= 30:
-                        deg = int(math.degrees(angle))
-                        scanData[deg] = (angle, radius)
-                packetsRead += 1
+                start_angle, points = parse_packet(packet)
 
-                if packetsRead >= 150:
-                    lidar_payload = { "lidar": scanData }
-                    message = json.dumps(lidar_payload)
-                    sock.sendto(message.encode("utf-8"), (IP, UDP_PORT))
-                    scanData = {}
-                    packetsRead = 0
+                if start_angle is not None:
+                    # Angle wrapped back past 0 -> a revolution completed, flush it.
+                    if prev_start_angle is not None and start_angle < prev_start_angle - 180.0:
+                        lidar_payload = { "lidar": scanData, "t": time.monotonic() }
+                        sock.sendto(json.dumps(lidar_payload).encode("utf-8"), (IP, UDP_PORT))
+                        scanData = {}
+                    prev_start_angle = start_angle
+
+                    for angle, radius, intensity in points:
+                        if 0 < radius < 8000 and intensity >= 30:
+                            deg = int(math.degrees(angle))
+                            scanData[deg] = (angle, radius)
 
 except KeyboardInterrupt:
     print("\nExit and closed port")
