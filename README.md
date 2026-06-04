@@ -113,3 +113,14 @@ Current setup is reliant on the LiDAR itself for odometry, which is not ideal as
 * Integrate with robot IMU for odometry (forward and backward)
 * Integrate with robot motor data for odometry (turning)
 * Integrate with robot camera for obstacle detection (outside of planar FOV of LiDAR)
+
+## Sensor Fusion with IMU
+
+```bash
+# to run launcher on WSL terminal
+cd ~/Documents/EE2-Balance-Robot-LiDAR-ROS2
+source /opt/ros/humble/setup.bash
+source ~/ros2_ws/install/setup.bash
+ros2 launch ./launcher.py
+
+```
