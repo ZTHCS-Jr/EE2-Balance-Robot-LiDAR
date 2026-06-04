@@ -1,12 +1,18 @@
+import os
 from launch import LaunchDescription
 from launch_ros.actions import Node
 from launch.actions import ExecuteProcess
 
 def generate_launch_description():
+    # Resolve the receiver next to this launch file, so it works regardless of
+    # username / checkout location.
+    receiver_path = os.path.join(
+        os.path.dirname(os.path.realpath(__file__)), 'sensors_udp_receiver.py')
+
     return LaunchDescription([
-        
+
         ExecuteProcess(
-            cmd=['python3', '-u', '/home/mongoose/Documents/EE2-Balance-Robot-LiDAR/sensors_udp_receiver.py'],
+            cmd=['python3', '-u', receiver_path],
             output='screen'
         ),
 
