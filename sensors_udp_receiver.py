@@ -37,7 +37,7 @@ class UDPLidarNode(Node):
                     self.publish_imu(incoming_json["imu"], current_time)
                 
             except BlockingIOError:
-                break # Queue is empty, exit loop
+                break
             except Exception as e:
                 self.get_logger().warning(f"UDP Error: {e}")
                 break
@@ -83,7 +83,7 @@ class UDPLidarNode(Node):
         # map ros z axiss
         msg.angular_velocity.x = 0.0
         msg.angular_velocity.y = 0.0
-        msg.angular_velocity.z = -raw_gyro # (Keep the negative if inverted!)
+        msg.angular_velocity.z = -raw_gyro
         
         # EKF trust z axis
         msg.angular_velocity_covariance[0] = -1.0 
