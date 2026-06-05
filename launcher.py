@@ -3,23 +3,34 @@ from launch import LaunchDescription
 from launch_ros.actions import Node
 from launch.actions import ExecuteProcess
 
+
 def generate_launch_description():
-    # Resolve the receiver next to this launch file, so it works regardless of
+    here = os.path.dirname(os.path.realpath(__file__))
+    # Resolve helper scripts next to this launch file, so it works regardless of
     # username / checkout location.
-    receiver_path = os.path.join(
-        os.path.dirname(os.path.realpath(__file__)), 'sensors_udp_receiver.py')
+    receiver_path = os.path.join(here, 'sensors_udp_receiver.py')
+    wheel_odom_path = os.path.join(here, 'wheel_odometry_node.py')
 
     return LaunchDescription([
 
+        # UDP -> ROS bridge: publishes /scan, /imu/data (yaw-rate only) and
+        # /wheel/joint_states (raw stepper counts, stamped with the ESP32 clock).
         ExecuteProcess(
             cmd=['python3', '-u', receiver_path],
             output='screen'
         ),
 
-        # TF Tree Anchor
+        # Wheel odometry: /wheel/joint_states -> /wheel/odom (vx trusted, yaw not).
+        ExecuteProcess(
+            cmd=['python3', '-u', wheel_odom_path],
+            output='screen'
+        ),
+
+        # --- TF tree (tilt handling deferred -> flat): map -> odom -> base_link -> {laser_frame, imu_link} ---
         Node(
             package='tf2_ros',
             executable='static_transform_publisher',
+            name='base_link_to_laser',
             arguments=[
                 '--x', '0', '--y', '0', '--z', '0',
                 '--yaw', '0', '--pitch', '0', '--roll', '0',
@@ -27,25 +38,21 @@ def generate_launch_description():
             ],
             output='screen'
         ),
-
-        # laser odometry
         Node(
-            package='rf2o_laser_odometry',
-            executable='rf2o_laser_odometry_node',
-            name='rf2o_laser_odometry',
-            output='screen',
-            parameters=[{
-                'laser_scan_topic' : '/scan',
-                'odom_topic' : '/odom',
-                'publish_tf' : False,
-                'base_frame_id' : 'base_link',
-                'odom_frame_id' : 'odom',
-                'init_pose_from_topic' : '',
-                'freq' : 20.0
-            }]
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name='base_link_to_imu',
+            arguments=[
+                '--x', '0', '--y', '0', '--z', '0',
+                '--yaw', '0', '--pitch', '0', '--roll', '0',
+                '--frame-id', 'base_link', '--child-frame-id', 'imu_link'
+            ],
+            output='screen'
         ),
 
-        # sensor fusion engine
+        # --- Sensor fusion: wheel vx + gyro yaw-rate -> odom -> base_link ---
+        # rf2o laser odometry removed: scan-matching odometry can itself double
+        # walls. Translation now comes from the wheels, heading from the gyro rate.
         Node(
             package='robot_localization',
             executable='ekf_node',
@@ -59,29 +66,29 @@ def generate_launch_description():
                 'odom_frame': 'odom',
                 'base_link_frame': 'base_link',
                 'world_frame': 'odom',
-                
-                # LiDAR Odometry (Trust X/Y translation)
-                'odom0': '/odom',
-                'odom0_config' : [True,  True,  False, # trust X, Y, ignore Z
-                                False, False, False, # ignore roll, pitch, yaw
-                                False, False, False, # ignore X, Y, Z velocity
-                                False, False, False, # ignore angular velocity
-                                False, False, False], # ignore acceleration
-                                 
-                # IMU (Trust Yaw rotation/velocity only)
+
+                # Wheel odometry: trust forward velocity (vx) ONLY. Let the EKF
+                # integrate pose; wheel heading is not fused (its covariance is huge).
+                # order: [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
+                'odom0': '/wheel/odom',
+                'odom0_config': [False, False, False,
+                                 False, False, False,
+                                 True,  False, False,
+                                 False, False, False,
+                                 False, False, False],
+
+                # IMU: trust yaw RATE (vyaw) ONLY. Absolute yaw is NOT fused, so the
+                # heading never inherits the MPU's integration drift.
                 'imu0': '/imu/data',
-                'imu0_config': [False, False, False, # ignore X,Y,Z
-                                False, False, True, #trust yaw
-                                False, False, False, # ignore velocity
-                                False, False, True, # trust yaw velocity
-                                False, False, False], # ignore acceleration
-                # IMU is the absolute heading reference, zeroed at startup.
-                'imu0_differential': False,
-                'imu0_relative': True,
+                'imu0_config': [False, False, False,
+                                False, False, False,
+                                False, False, False,
+                                False, False, True,
+                                False, False, False],
             }]
         ),
 
-        # SLAM toolkit
+        # --- SLAM ---
         Node(
             package='slam_toolbox',
             executable='async_slam_toolbox_node',
@@ -94,18 +101,27 @@ def generate_launch_description():
                 'map_frame': 'map',
                 'scan_topic': '/scan',
                 'mode': 'mapping',
-                'map_update_interval': 0.5,
-                'minimum_travel_distance': 0.2,   # fewer, better-separated keyframes
-                'minimum_travel_heading': 0.2,    # (was 0.05/0.05 -> over-sampled noisy poses)
-                'minimum_time_interval': 0.2,
-                'max_laser_range': 8.0,           # match the scan range
+                'map_update_interval': 0.3,        # republish /map ~3 Hz for snappier RViz refresh
+                'minimum_travel_distance': 0.05,  # 5 cm: responsive map updates. Safe now that
+                                                  # wheel+gyro odometry is clean (the old 0.2 was
+                                                  # to mask noisy rf2o/absolute-yaw odometry).
+                'minimum_travel_heading': 0.1,    # ~5.7 deg; lower this too if turns map coarsely
+                'minimum_time_interval': 0.1,     # throttle: <=5 scans/s processed (raise CPU floor)
+                'min_laser_range': 0.1,           # match the scan range_min
+                'max_laser_range': 8.0,           # match the scan range_max (and client clamp)
                 'resolution': 0.05,
                 'transform_timeout': 0.3,
                 'use_scan_matching': True,
                 'use_scan_barycenter': True,
+                # Loop closure / dedup. Raise loop_match_minimum_response_fine if you
+                # see false closures; lower it (cautiously) if real loops are missed.
+                'do_loop_closing': True,
+                'loop_search_maximum_distance': 3.0,
+                'loop_match_minimum_response_coarse': 0.35,
+                'loop_match_minimum_response_fine': 0.45,
             }]
         ),
-        
+
         Node(
             package='rviz2',
             executable='rviz2',
