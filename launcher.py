@@ -3,40 +3,30 @@ from launch_ros.actions import Node
 from launch.actions import ExecuteProcess
 
 def generate_launch_description():
+    receiver_path = os.path.join(
+        os.path.dirname(os.path.realpath(__file__)), 'sensors_udp_receiver.py')
+
     return LaunchDescription([
-        
+
         ExecuteProcess(
-            cmd=['python3', '-u', '/home/mongoose/Documents/EE2-Balance-Robot-LiDAR/sensors_udp_receiver.py'],
+            cmd=['python3', '-u', receiver_path],
             output='screen'
         ),
 
-        # TF Tree Anchor
+        # TF Tree Anchor: LiDAR
         Node(
             package='tf2_ros',
             executable='static_transform_publisher',
-            arguments=[
-                '--x', '0', '--y', '0', '--z', '0',
-                '--yaw', '0', '--pitch', '0', '--roll', '0',
-                '--frame-id', 'base_link', '--child-frame-id', 'laser_frame'
-            ],
+            arguments=['0', '0', '0', '0', '0', '0', 'base_link', 'laser_frame'],
             output='screen'
         ),
 
-        # laser odometry
+        # TF Tree Anchor: IMU
         Node(
-            package='rf2o_laser_odometry',
-            executable='rf2o_laser_odometry_node',
-            name='rf2o_laser_odometry',
-            output='screen',
-            parameters=[{
-                'laser_scan_topic' : '/scan',
-                'odom_topic' : '/odom',
-                'publish_tf' : False,
-                'base_frame_id' : 'base_link',
-                'odom_frame_id' : 'odom',
-                'init_pose_from_topic' : '',
-                'freq' : 20.0
-            }]
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            arguments=['0', '0', '0', '0', '0', '0', 'base_link', 'imu_link'],
+            output='screen'
         ),
 
         # sensor fusion engine
@@ -46,7 +36,8 @@ def generate_launch_description():
             name='ekf_filter_node',
             output='screen',
             parameters=[{
-                'frequency': 50.0,
+                'frequency': 30.0,
+                'sensor_timeout': 0.1,
                 'two_d_mode': True,
                 'publish_tf': True,
                 'map_frame': 'map',
@@ -54,25 +45,19 @@ def generate_launch_description():
                 'base_link_frame': 'base_link',
                 'world_frame': 'odom',
                 
-                # LiDAR Odometry (Trust X/Y translation)
-                'odom0': '/odom',
-                'odom0_config' : [True,  True,  False, # trust X, Y, ignore Z
-                                False, False, False, # ignore roll, pitch, yaw
-                                False, False, False, # ignore X, Y, Z velocity
-                                False, False, False, # ignore angular velocity
-                                False, False, False], # ignore acceleration
+                # [X, Y, Z, Roll, Pitch, Yaw, Vx, Vy, Vz, Vroll, Vpitch, Vyaw, Ax, Ay, Az]
+                'odom0': '/wheel/odometry',
+                'odom0_config': [True, True,  False, False, False, True,
+                                 True, False, False, False, False, True,
+                                 False, False, False],
                                  
-                # IMU (Trust Yaw rotation/velocity only)
                 'imu0': '/imu/data',
-                'imu0_config': [False, False, False, # ignore X,Y,Z
-                                False, False, True, #trust yaw
-                                False, False, False, # ignore velocity
-                                False, False, True, # trust yaw velocity
-                                False, False, False] # ignore acceleration
+                'imu0_config': [False, False, False, False, False, False,
+                                False, False, False, False, False, True,
+                                False, False, False]
             }]
         ),
 
-        # SLAM toolkit
         Node(
             package='slam_toolbox',
             executable='async_slam_toolbox_node',
@@ -85,11 +70,8 @@ def generate_launch_description():
                 'map_frame': 'map',
                 'scan_topic': '/scan',
                 'mode': 'mapping',
-                'map_update_interval': 0.5,
                 'minimum_travel_distance': 0.05,
-                'minimum_travel_heading': 0.05,
-                'use_scan_matching': True,
-                'use_scan_barycenter': True,
+                'minimum_travel_heading': 0.05
             }]
         ),
         

@@ -60,19 +60,32 @@ try:
     packetsRead = 0
 
     while True:
-        # IMU send data at 50hz
+        # motor and imu send data at 50hz
         while imu_ser.in_waiting > 0:
             raw_line = imu_ser.readline().decode('utf-8', errors='ignore').strip()
             
             if raw_line.startswith("IMU:"):
                 try:
                     latest_gyro_x = float(raw_line.split(":")[1])
-                    
-                    # Package and send the IMU data IMMEDIATELY
                     imu_payload = { "imu": { "gyro_x": latest_gyro_x } }
                     message = json.dumps(imu_payload)
                     sock.sendto(message.encode("utf-8"), (IP, UDP_PORT))
                 except ValueError:
+                    pass 
+            
+            elif raw_line.startswith("MOTOR:"):
+                try:
+                    parts = raw_line.split(":")[1].split(",")
+                    # uncomment for test using getSpeed() in controller
+                    # left_rad = float(parts[0])
+                    # right_rad = float(parts[1])
+                    # odom_payload = { "odom": { "left_rad": left_rad, "right_rad": right_rad } }
+                    left_steps = int(parts[0])
+                    right_steps = int(parts[1])
+                    odom_payload = { "odom": { "left_steps": left_steps, "right_steps": right_steps } }
+                    message = json.dumps(odom_payload)
+                    sock.sendto(message.encode("utf-8"), (IP, UDP_PORT))
+                except (ValueError, IndexError):
                     pass 
 
         # lidar send data at 2.5hz
