@@ -193,3 +193,64 @@ gyro-rate and scan-sweep signs; verify them with the bring-up checks below.
 ros2 run tf2_tools view_frames        # expect map->odom->base_link->{laser_frame,imu_link}
 ros2 bag record -a                    # capture a run for before/after comparison
 ```
+
+## Autonomous Frontier Mapping
+
+Lets the robot explore and map a room on its own. A lightweight frontier explorer
+picks the nearest boundary between known-free and unknown space, drives toward it
+with reactive obstacle avoidance, and repeats until no frontiers remain. (No nav2 —
+deliberately simple and slow, suited to the balancing robot over WiFi.)
+
+### Data flow
+
+```
+frontier_explorer.py   /map + /scan + TF(map->base_link)  -> /cmd_vel (Twist)
+  -> cmd_vel_bridge.py  /cmd_vel -> UDP {"v","w"} -> Pi :31416
+  -> client.py cmd_listener_loop:  V = v/wheel_radius,  A = w*wheel_base/(2*wheel_radius)
+  -> ESP32 V:/A:  (same convention as the manual joystick; +A = turn left / CCW)
+```
+
+### Run it (alongside the mapping stack)
+
+```bash
+# Terminal 1: the mapping stack (provides /map, /scan, TF)
+ros2 launch ./launcher.py
+
+# Terminal 2: the autonomy (bridge + explorer). Set the robot Pi's LAN IP.
+ros2 launch ./autonomous_explore.py pi_ip:=192.168.x.y
+
+# Start / stop exploration (it boots DISABLED for safety):
+ros2 service call /explore/enable std_srvs/srv/SetBool "{data: true}"
+ros2 service call /explore/enable std_srvs/srv/SetBool "{data: false}"
+```
+
+### Safety — three independent stop layers
+
+* **Explorer disabled** (default, and via the service) -> commands zero velocity.
+* **Bridge stale -> zeros**: if `/cmd_vel` stops updating, the bridge sends zeros
+  rather than repeating the last command.
+* **Pi deadman**: if the bridge/explorer dies entirely, `client.py` sees no commands
+  for 0.5 s and writes `V:0`/`A:0`.
+
+Don't drive the manual joystick while autonomous is running — they share the ESP32
+and would fight. Speeds are intentionally low (`v_fwd` 0.1 m/s, `w_max` 0.6 rad/s).
+
+### Key parameters
+
+| Node | Param | Default | Notes |
+|---|---|---|---|
+| `cmd_vel_bridge` | `pi_ip` | 10.144.216.133 | **set to the robot Pi's IP** |
+| `cmd_vel_bridge` | `pi_port` / `rate` | 31416 / 20 Hz | UDP target + resend rate |
+| `frontier_explorer` | `v_fwd` / `w_max` | 0.07 / 0.3 | forward creep / max turn (kept slow to avoid rotational scan smear / doubled walls) |
+| `frontier_explorer` | `settle_time` | 0.4 | s held still after each turn so slam gets a clean, undistorted scan |
+| `frontier_explorer` | `stop_dist` | 0.35 | front obstacle stop distance (m) |
+| `frontier_explorer` | `min_frontier_size` | 5 | ignore frontier blobs smaller than this (cells) |
+| `frontier_explorer` | `stuck_time` | 5.0 | s of no progress -> blacklist target + escape-rotate |
+
+### Quick test without the robot
+
+```bash
+# Bridge + Pi deadman (robot connected, explorer off):
+ros2 topic pub -r 10 /cmd_vel geometry_msgs/Twist '{linear: {x: 0.1}}'   # creeps forward
+# Ctrl-C -> stops within ~0.5 s (deadman)
+```
