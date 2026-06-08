@@ -193,3 +193,68 @@ gyro-rate and scan-sweep signs; verify them with the bring-up checks below.
 ros2 run tf2_tools view_frames        # expect map->odom->base_link->{laser_frame,imu_link}
 ros2 bag record -a                    # capture a run for before/after comparison
 ```
+
+## Pitch scan-gate (balancing-body tilt)
+
+The body rocks fore/aft to balance, which tilts the 2-D lidar plane and smears the map.
+The firmware appends its pitch (`tiltx`, rad) to the `ODOM:` line; `client.py` forwards it
+as `"pitch"`, and `sensors_udp_receiver.py` **drops `/scan` whenever `|pitch| > PITCH_GATE`**
+(default `0.09 rad ≈ 5°`, top of the receiver). Tilted, unreliable scans never reach
+slam/nav. Verify: `ros2 topic hz /scan` while tilting the robot past ~5° → the rate drops
+to ~0, and recovers when level.
+
+## Autonomous Mapping (nav2 + explore_lite)
+
+`explore_lite` finds frontiers (free/unknown boundary) in nav2's global costmap and sends
+`NavigateToPose` goals; **nav2** drives there. slam_toolbox provides `map → odom`, so nav2
+runs with **no AMCL/map_server**. Speeds are kept low and the pitch-gate is on, to avoid
+map doubling.
+
+```
+explore_lite --(NavigateToPose)--> nav2 --/cmd_vel--> cmd_vel_bridge --UDP--> Pi client.py --> ESP32 V:/A:
+```
+
+### Install (one-time)
+
+```bash
+sudo apt install ros-humble-navigation2 ros-humble-nav2-bringup    # nav2 (system)
+
+# explore_lite: source build in a NEW dedicated workspace (keeps it out of ~/Documents/ros2_ws)
+mkdir -p ~/Documents/balance_explore_ws/src
+cd ~/Documents/balance_explore_ws/src && git clone https://github.com/robo-friends/m-explore-ros2.git
+cd ~/Documents/balance_explore_ws && colcon build --symlink-install --packages-up-to explore_lite
+```
+(`--packages-up-to explore_lite` builds the explorer + its msgs and skips the unused
+`map_merge` package. The repo is already cloned at `~/Documents/balance_explore_ws/src`.)
+
+### Run (alongside the mapping stack)
+
+```bash
+# Terminal 1 -- mapping (provides /scan, /map, TF, /odometry/filtered)
+ros2 launch ./launcher.py
+
+# Terminal 2 -- autonomy. Source ROS + the explore_lite workspace; set the Pi's LAN IP.
+source /opt/ros/humble/setup.bash
+source ~/Documents/balance_explore_ws/install/setup.bash
+ros2 launch ./autonomous_explore.py pi_ip:=192.168.x.y
+```
+
+### Bring-up order (de-risk before full autonomy)
+
+1. **Deadman / bridge:** `ros2 topic pub -r 10 /cmd_vel geometry_msgs/Twist '{linear: {x: 0.1}}'`
+   → robot creeps forward; Ctrl-C → stops within ~0.5 s (Pi-side deadman).
+2. **nav2 manually:** in RViz add the costmaps, then give a **2D Goal Pose** → robot drives there
+   slowly. Confirms costmaps + controller + bridge before turning on exploration.
+3. **explore_lite:** with both launches up, it auto-explores; the map fills and it stops when no
+   frontiers remain (expected "done" in a small room).
+
+### Key parameters
+
+| File | Param | Default | Notes |
+|---|---|---|---|
+| `nav2_params.yaml` | `robot_radius` | 0.075 | <15 cm-diameter robot |
+| `nav2_params.yaml` | `inflation_radius` / `cost_scaling_factor` | 0.12 / 5.0 | small + steep so it enters the ~0.8 m gap close to walls |
+| `nav2_params.yaml` | `FollowPath.desired_linear_vel` | 0.12 | slow (anti-doubling) |
+| `explore_params.yaml` | `min_frontier_size` | 0.3 | m; ignore tiny frontiers |
+| `cmd_vel_bridge` | `pi_ip` | (set it) | robot Pi LAN IP for UDP commands |
+| `sensors_udp_receiver.py` | `PITCH_GATE` | 0.09 | rad; drop scans above this tilt |

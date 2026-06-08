@@ -6,21 +6,20 @@ from launch.actions import ExecuteProcess
 
 def generate_launch_description():
     here = os.path.dirname(os.path.realpath(__file__))
-    # Resolve helper scripts next to this launch file, so it works regardless of
-    # username / checkout location.
+    # Paths to our ROS2 nodes
     receiver_path = os.path.join(here, 'sensors_udp_receiver.py')
     wheel_odom_path = os.path.join(here, 'wheel_odometry_node.py')
 
     return LaunchDescription([
 
-        # UDP -> ROS bridge: publishes /scan, /imu/data (yaw-rate only) and
-        # /wheel/joint_states (raw stepper counts, stamped with the ESP32 clock).
+        # Receives over UDP data fro Rpi and publishes /scan, /imu/data (yaw-rate only) and
+        # /wheel/joint_states (raw stepper counts, stamped with the ESP32 clock)
         ExecuteProcess(
             cmd=['python3', '-u', receiver_path],
             output='screen'
         ),
 
-        # Wheel odometry: /wheel/joint_states -> /wheel/odom (vx trusted, yaw not).
+        # Subscribes to joint_state and converts the raw motor steps into motor odom (linear/angular velocity)
         ExecuteProcess(
             cmd=['python3', '-u', wheel_odom_path],
             output='screen'
@@ -49,10 +48,8 @@ def generate_launch_description():
             ],
             output='screen'
         ),
-
-        # --- Sensor fusion: wheel vx + gyro yaw-rate -> odom -> base_link ---
-        # rf2o laser odometry removed: scan-matching odometry can itself double
-        # walls. Translation now comes from the wheels, heading from the gyro rate.
+        
+        # Sensor fusion: wheel velocity and gyro yaw-rate combined to create odom frame
         Node(
             package='robot_localization',
             executable='ekf_node',
@@ -67,8 +64,9 @@ def generate_launch_description():
                 'base_link_frame': 'base_link',
                 'world_frame': 'odom',
 
-                # Wheel odometry: trust forward velocity (vx) ONLY. Let the EKF
-                # integrate pose; wheel heading is not fused (its covariance is huge).
+                # Wheel odometry: trust forward velocity (vx) ONLY. The EKF
+                # integrates the pose
+                # We dong fuse wheel heading.
                 # order: [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
                 'odom0': '/wheel/odom',
                 'odom0_config': [False, False, False,
@@ -102,19 +100,15 @@ def generate_launch_description():
                 'scan_topic': '/scan',
                 'mode': 'mapping',
                 'map_update_interval': 0.3,        # republish /map ~3 Hz for snappier RViz refresh
-                'minimum_travel_distance': 0.05,  # 5 cm: responsive map updates. Safe now that
-                                                  # wheel+gyro odometry is clean (the old 0.2 was
-                                                  # to mask noisy rf2o/absolute-yaw odometry).
-                'minimum_travel_heading': 0.1,    # ~5.7 deg; lower this too if turns map coarsely
+                'minimum_travel_distance': 0.05,  # Update map every 5cm travelled
+                'minimum_travel_heading': 0.05,   # ~2.9 deg (was 0.1/5.7); finer scan cadence in turns -> less doubling
                 'minimum_time_interval': 0.1,     # throttle: <=5 scans/s processed (raise CPU floor)
-                'min_laser_range': 0.1,           # match the scan range_min
-                'max_laser_range': 8.0,           # match the scan range_max (and client clamp)
+                'min_laser_range': 0.1,           # matches the scan range_min
+                'max_laser_range': 8.0,           # matches the scan range_max 
                 'resolution': 0.05,
                 'transform_timeout': 0.3,
                 'use_scan_matching': True,
                 'use_scan_barycenter': True,
-                # Loop closure / dedup. Raise loop_match_minimum_response_fine if you
-                # see false closures; lower it (cautiously) if real loops are missed.
                 'do_loop_closing': True,
                 'loop_search_maximum_distance': 3.0,
                 'loop_match_minimum_response_coarse': 0.35,

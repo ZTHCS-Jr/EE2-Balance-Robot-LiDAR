@@ -9,12 +9,30 @@ import math
 # --- Empirical conventions: confirm with the Step 0 diagnostic, flip if needed ---
 # LD19 reports angle clockwise; ROS LaserScan expects counter-clockwise (REP-103).
 # A mirrored scan inverts rotation and fights the gyro heading -> doubled walls.
-# Verify: rotate the robot CCW; /scan features should sweep CCW. If not, flip this.
+# This flips the scan's HANDEDNESS (a mirror). Wrong choice => the built map is a
+# MIRROR IMAGE of the real room (scan still self-consistent, so translation looks
+# fine -- only rotation/chirality reveals it). 2026-06: False gave a mirrored map AND
+# rotation doubling (the mirrored scan fights the +CCW gyro) -> set True, the correct
+# CW(LD19)->CCW(REP-103) conversion. NB: the "rotate CCW, scan sweeps CW" check is a
+# red herring -- in a robot-fixed view the scan SHOULD sweep opposite the body. The
+# real test: the map must NOT be mirrored. (True's old doubling was scan latency,
+# now handled by SCAN_LATENCY below -- not a direction problem.)
 REVERSE_SCAN_DIRECTION = True
 # Sign of the gyro yaw rate so that CCW rotation is POSITIVE (REP-103).
 # Verify: rotate the robot CCW; /imu/data angular_velocity.z should be > 0.
 # If it reads negative, flip this to -1.0.
 GYRO_SIGN = 1.0
+# Pitch scan-gate: drop /scan whenever the balancing body is tilted more than this
+# (rad). A tilted 2D lidar plane measures walls at the wrong range and smears the map.
+PITCH_GATE = 0.09  # ~5 deg
+# Scan timestamp back-dating (s). The Pi accumulates a full LD19 revolution
+# (~100 ms) before sending, so by arrival the gyro/EKF heading has already
+# rotated past where the scan was actually captured -> slam places the scan
+# over-rotated and walls "overshoot then snap back", doubling on fast turns.
+# Stamping the scan this far in the PAST makes slam look up the heading the
+# robot really had mid-sweep, cancelling the overshoot. Tune: if walls still
+# lead the turn, raise it; if they now lag, lower it. Set 0.0 to disable.
+SCAN_LATENCY = 0.08
 # ---------------------------------------------------------------------------------
 
 
@@ -28,14 +46,7 @@ class UDPLidarNode(Node):
         # so the timestamp travels with the data.
         self.wheel_pub = self.create_publisher(JointState, 'wheel/joint_states', 10)
 
-        # ESP32-millis() -> ROS-time anchor, set on the first odom packet. Stamping
-        # wheel/IMU messages with the embedded ESP32 clock (rather than arrival time)
-        # lets the wheel odometry node derive dt immune to UDP/processing jitter and
-        # robust to dropped packets (gaps simply show as a larger dt; the absolute
-        # step counts self-heal across drops). millis() wraps after ~49.7 days, which
-        # is far beyond any mapping session, so wrap handling is omitted.
-        self._t0_ros = None       # rclpy Time captured at the first odom packet
-        self._t0_esp_ms = None    # ESP32 millis() value at that first packet
+        self.latest_pitch = 0.0   # latest body pitch (rad) from ODOM; gates /scan
 
         self.UDP_PORT = 31415
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -53,9 +64,12 @@ class UDPLidarNode(Node):
                 incoming_json = json.loads(data.decode('utf-8'))
 
                 if "lidar" in incoming_json:
-                    # Lidar packets carry no ESP32 timestamp; stamp on arrival.
-                    self.publish_laserscan(incoming_json["lidar"],
-                                           self.get_clock().now().to_msg())
+                    # Lidar packets carry no ESP32 timestamp. Back-date the stamp by
+                    # SCAN_LATENCY so the scan lines up with the heading the robot
+                    # had mid-sweep, not the over-rotated heading at arrival (see top).
+                    stamp = (self.get_clock().now() -
+                             Duration(seconds=SCAN_LATENCY)).to_msg()
+                    self.publish_laserscan(incoming_json["lidar"], stamp)
 
                 if "odom" in incoming_json:
                     self.publish_odom(incoming_json["odom"])
@@ -66,15 +80,12 @@ class UDPLidarNode(Node):
                 self.get_logger().warning(f"UDP Error: {e}")
                 break
 
-    def _esp_stamp(self, t_ms):
-        """Map an ESP32 millis() value onto ROS time via a fixed first-packet anchor."""
-        if self._t0_ros is None:
-            self._t0_ros = self.get_clock().now()
-            self._t0_esp_ms = t_ms
-        elapsed_ns = int((t_ms - self._t0_esp_ms) * 1_000_000)
-        return (self._t0_ros + Duration(nanoseconds=elapsed_ns)).to_msg()
-
     def publish_laserscan(self, scanData, current_time):
+        # Pitch scan-gate: a tilted balancing body throws the 2D scan plane off, so
+        # skip this scan entirely rather than feed slam/nav a smeared one.
+        if abs(self.latest_pitch) > PITCH_GATE:
+            return
+
         msg = LaserScan()
         msg.header.stamp = current_time
         msg.header.frame_id = 'laser_frame'
@@ -103,10 +114,16 @@ class UDPLidarNode(Node):
     def publish_odom(self, odom):
         """One consolidated ESP32 packet -> raw wheel counts + gyro yaw rate.
 
-        Packet: {"t_ms", "left_steps", "right_steps", "yaw_rate"}.
-        Both messages are stamped with the ESP32 clock so downstream dt is accurate.
+        Packet: {"t_ms", "left_steps", "right_steps", "yaw_rate", "pitch"}.
+        Stamped with ROS-now -- the SAME clock as /scan and slam's map->odom -- so the
+        whole TF tree is time-consistent. nav2's strict tf2 MessageFilter requires this;
+        an earlier ESP32-anchored stamp put odom->base_link on a different timeline,
+        which slam tolerated but nav2 saw as a ~1.2 s `Transform data too old`. The
+        embedded t_ms is no longer used for stamping; wheel_odometry_node derives dt
+        from these ROS-now stamps (its dt<=0 guard handles same-tick packets).
         """
-        stamp = self._esp_stamp(int(odom["t_ms"]))
+        stamp = self.get_clock().now().to_msg()
+        self.latest_pitch = float(odom.get("pitch", 0.0))  # gates /scan (see PITCH_GATE)
 
         # Raw signed microstep counts -> /wheel/joint_states (geometry applied later
         # by the parameterized wheel_odometry_node).
