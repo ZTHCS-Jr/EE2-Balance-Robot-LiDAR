@@ -35,6 +35,12 @@ GYRO_SCALE = 1.167
 # Pitch scan-gate: drop /scan whenever the balancing body is tilted more than this
 # (rad). A tilted 2D lidar plane measures walls at the wrong range and smears the map.
 PITCH_GATE = 0.09  # ~5 deg
+# Near-range self-hit clip (m): the LiDAR sees the robot's own structure (a fixed return
+# ~0.13 m out at a CONSTANT bearing). Drop returns closer than this so they never reach
+# slam -- otherwise slam smears a ring of phantom obstacles around the robot as it turns,
+# boxing the explorer in ("no reachable frontiers"). Keep it above the self-structure but
+# below real obstacles; the explorer avoids real walls well beyond it.
+SELF_CLIP_RANGE = 0.10
 # Scan timestamp back-dating (s). The Pi accumulates a full LD19 revolution
 # (~100 ms) before sending, so by arrival the gyro/EKF heading has already
 # rotated past where the scan was actually captured -> slam places the scan
@@ -42,7 +48,9 @@ PITCH_GATE = 0.09  # ~5 deg
 # Stamping the scan this far in the PAST makes slam look up the heading the
 # robot really had mid-sweep, cancelling the overshoot. Tune: if walls still
 # lead the turn, raise it; if they now lag, lower it. Set 0.0 to disable.
-SCAN_LATENCY = 0.01
+SCAN_LATENCY = 0.0  # DISABLED for now: Pi JPEG encode is threaded so real lag is small;
+                    # an over-large back-date skews the map on turns. Re-tune only if
+                    # rotation doubling returns (measure spin-stop lag, set SCAN_LATENCY=that).
 # ---------------------------------------------------------------------------------
 
 
@@ -103,7 +111,7 @@ class UDPLidarNode(Node):
         msg.angle_min = 0.0
         msg.angle_max = 2.0 * math.pi
         msg.angle_increment = (2.0 * math.pi) / 360.0
-        msg.range_min = 0.1  # 0.1 m minimum
+        msg.range_min = SELF_CLIP_RANGE  # drop self-hits closer than the robot's own structure
         msg.range_max = 8.0  # 8 m (LD19 hardware does 12 m); far returns pin down rotation
 
         ranges = [float('inf')] * 360
@@ -112,9 +120,11 @@ class UDPLidarNode(Node):
             deg = int(deg_str)
             if 0 <= deg < 360:
                 try:
-                    radius_mm = data_pair[1]
+                    r = float(data_pair[1]) / 1000.0
+                    if r < SELF_CLIP_RANGE:
+                        continue  # self-hit / too-close -> leave as inf (no return)
                     idx = (360 - deg) % 360 if REVERSE_SCAN_DIRECTION else deg
-                    ranges[idx] = float(radius_mm) / 1000.0
+                    ranges[idx] = r
                 except (IndexError, TypeError):
                     continue
 
