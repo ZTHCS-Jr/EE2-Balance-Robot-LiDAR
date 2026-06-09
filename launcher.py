@@ -86,7 +86,7 @@ def generate_launch_description():
             }]
         ),
 
-        # --- SLAM ---
+        # SLAM
         Node(
             package='slam_toolbox',
             executable='async_slam_toolbox_node',
@@ -102,7 +102,7 @@ def generate_launch_description():
                 'map_update_interval': 0.3,        # republish /map ~3 Hz for snappier RViz refresh
                 'minimum_travel_distance': 0.05,  # Update map every 5cm travelled
                 'minimum_travel_heading': 0.05,   # ~2.9 deg (was 0.1/5.7); finer scan cadence in turns -> less doubling
-                'minimum_time_interval': 0.1,     # throttle: <=5 scans/s processed (raise CPU floor)
+                'minimum_time_interval': 0.1,     # throttle: <=5 scans/s processed 
                 'min_laser_range': 0.1,           # matches the scan range_min
                 'max_laser_range': 8.0,           # matches the scan range_max 
                 'resolution': 0.05,
@@ -111,13 +111,10 @@ def generate_launch_description():
                 'use_scan_barycenter': True,
                 'do_loop_closing': True,
                 'loop_search_maximum_distance': 3.0,
-                'loop_match_minimum_response_coarse': 0.45,  # was 0.35: stricter pre-filter
-                'loop_match_minimum_response_fine': 0.55,    # was 0.45: only accept a HIGH-
-                                                             # confidence closure, so the
-                                                             # whole-map snap lands right
-                                                             # instead of leaving an angle
-                'loop_match_minimum_chain_size': 12,         # require a longer agreeing chain
-                                                             # of scans -> reject spurious loops
+                # Parameters help fix issue of map doubling to ensure map closure is stricter
+                'loop_match_minimum_response_coarse': 0.45,
+                'loop_match_minimum_response_fine': 0.55,    
+                'loop_match_minimum_chain_size': 12,
             }]
         ),
 

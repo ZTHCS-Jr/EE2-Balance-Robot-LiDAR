@@ -1,21 +1,12 @@
 #!/usr/bin/env python3
-"""Differential-drive wheel odometry from commanded stepper counts.
-
-Subscribes  : /wheel/joint_states  (sensor_msgs/JointState)
+"""
+Subscribes: /wheel/joint_states  (sensor_msgs/JointState)
                   name     = ['left_wheel', 'right_wheel']
                   position = [left_steps, right_steps]   (signed absolute microsteps)
-                  stamp    = ESP32 clock (anchored to ROS time by the receiver)
-Publishes   : /wheel/odom          (nav_msgs/Odometry, frame odom -> base_link)
+                  stamp    = ESP32 clock (anchored to ROS time by the udp_receiver)
+Publishes: /wheel/odom          (nav_msgs/Odometry, frame odom -> base_link)
 
-The EKF (robot_localization) only fuses this node's twist.linear.x: steppers do
-not slip much longitudinally, so vx is trusted (small covariance). Heading from
-the wheels is DISTRUSTED (open-loop steppers can drop steps under the dynamic load
-of balancing, with no encoder to confirm) -> twist.angular.z gets a huge
-covariance and the EKF takes heading from the gyro instead. The full pose is still
-integrated and published for debugging / RViz. This node does NOT publish TF; the
-EKF owns odom -> base_link.
-
-All robot geometry is exposed as ROS parameters (no magic numbers).
+The EKF (robot_localization) only fuses this node's twist.linear.x
 """
 import math
 
@@ -28,54 +19,22 @@ from nav_msgs.msg import Odometry
 class WheelOdometryNode(Node):
     def __init__(self):
         super().__init__('wheel_odometry_node')
-
-        # --- Geometry (override at launch; wheel_diameter/wheel_base are placeholders
-        #     marked TODO until the measured values are supplied) ---
-        self.declare_parameter('steps_per_rev', 200)
-        self.declare_parameter('microstepping', 16)
-        self.declare_parameter('wheel_diameter', 0.065)   # measured: 6.5 cm
-        self.declare_parameter('wheel_base', 0.12)        # measured: 12 cm track width
-
-        # Sign conventions (verify empirically: push the robot forward by hand and
-        # confirm both wheel deltas come out positive). step2 (right) is mounted
-        # mirrored and negated in firmware, hence the default -1.
-        self.declare_parameter('left_sign', 1.0)
-        self.declare_parameter('right_sign', -1.0)
-
-        # Covariances. vx trusted; wheel heading distrusted.
-        self.declare_parameter('vx_variance', 0.002)
-        self.declare_parameter('wz_variance', 1.0e6)
-        self.declare_parameter('x_variance', 0.001)
-        self.declare_parameter('y_variance', 0.001)
-        self.declare_parameter('yaw_variance', 1.0e6)
-
-        # Frames + robustness.
-        self.declare_parameter('odom_frame', 'odom')
-        self.declare_parameter('base_frame', 'base_link')
-        self.declare_parameter('max_dt', 0.5)  # s; skip integration across long gaps
-        # Glitch guards. A balancing robot moves <~ a few cm per sample, so any sample
-        # implying more is a bad packet (corrupt/duplicated UDP, stepper-counter wrap)
-        # or a tiny dt from two packets sharing a stamp. Left unguarded these spike the
-        # EKF's vx and teleport odom ~30 m out of the costmap mid-map (the run-killer).
-        self.declare_parameter('max_jump', 0.3)   # m; reject a per-wheel delta above this
-        self.declare_parameter('min_dt', 0.005)   # s; below this, twist (d/dt) is garbage
-
-        steps_per_rev = self.get_parameter('steps_per_rev').value
-        microstepping = self.get_parameter('microstepping').value
-        wheel_diameter = self.get_parameter('wheel_diameter').value
-        self.wheel_base = self.get_parameter('wheel_base').value
-        self.left_sign = self.get_parameter('left_sign').value
-        self.right_sign = self.get_parameter('right_sign').value
-        self.vx_variance = self.get_parameter('vx_variance').value
-        self.wz_variance = self.get_parameter('wz_variance').value
-        self.x_variance = self.get_parameter('x_variance').value
-        self.y_variance = self.get_parameter('y_variance').value
-        self.yaw_variance = self.get_parameter('yaw_variance').value
-        self.odom_frame = self.get_parameter('odom_frame').value
-        self.base_frame = self.get_parameter('base_frame').value
-        self.max_dt = self.get_parameter('max_dt').value
-        self.max_jump = self.get_parameter('max_jump').value
-        self.min_dt = self.get_parameter('min_dt').value
+        steps_per_rev = 200
+        microstepping = 16
+        wheel_diameter = 0.065
+        self.wheel_base = 0.12
+        self.left_sign = 1
+        self.right_sign = -1
+        self.vx_variance = 0.002
+        self.wz_variance = 1.0e6
+        self.x_variance = 0.001
+        self.y_variance = 0.001
+        self.yaw_variance = 1.0e6
+        self.odom_frame = 'odom'
+        self.base_frame = 'base_link'
+        self.max_dt = 0.5 # Skip integrating yaw in large differences (0.5s)
+        self.max_jump = 0.3 # Max jump in positions to remove the glitch of it randomly teloporting
+        self.min_dt = 0.005 # Skip integrating yaw in small differences
 
         # Metres of wheel travel per commanded microstep.
         self.dist_per_step = (math.pi * wheel_diameter) / (steps_per_rev * microstepping)
@@ -119,11 +78,8 @@ class WheelOdometryNode(Node):
         d_right = (right - self.prev_right) * self.right_sign * self.dist_per_step
         self.prev_left, self.prev_right, self.prev_t = left, right, t
 
-        # Glitch guard: a corrupt/duplicated packet or a stepper-counter wrap yields a
-        # huge one-tick delta that teleports the EKF (vx spike) and throws the robot out
-        # of the costmap (the sudden ~30 m odom jump mid-map). prev is already reseeded
-        # to the current counts above, so just drop this delta and report no motion --
-        # the absolute counts self-heal on the next sample.
+        # Glitching fix so that corrupt/duplicate packets (due to UDP) can cause the EKF and ODOM to spike causing it to teleport in the generated map
+        # We just ignore data that is greater than a large jump
         if abs(d_left) > self.max_jump or abs(d_right) > self.max_jump:
             self.get_logger().warn(
                 f"wheel-odom glitch rejected: d_left={d_left:.2f} m, "
@@ -131,10 +87,8 @@ class WheelOdometryNode(Node):
             self.publish_odom(msg.header.stamp, 0.0, 0.0)
             return
 
-        # Guard against reordered / late packets, post-gap dt (a dropped run of packets
-        # leaves the absolute counts correct, but the velocity over a huge dt is
-        # meaningless), and bunched packets sharing a stamp (tiny dt -> huge vx that
-        # would spike the EKF): still advance the pose, but report zero twist.
+        # Guard against reordered or late packets causing the timing to be out of sync
+        # Simply stop the robot if out of sync
         valid_dt = self.min_dt <= dt <= self.max_dt
 
         d_center = 0.5 * (d_left + d_right)
