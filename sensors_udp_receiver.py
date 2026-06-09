@@ -22,6 +22,16 @@ REVERSE_SCAN_DIRECTION = True
 # Verify: rotate the robot CCW; /imu/data angular_velocity.z should be > 0.
 # If it reads negative, flip this to -1.0.
 GYRO_SIGN = 1.0
+# Gyro yaw-rate SCALE. The MPU6050 rate sensitivity is a few % off, so the EKF heading
+# rotates a bit faster/slower than the body -> on a pure in-place spin the map walls fan
+# out (rotated doubling) even at low speed. Calibrate with this at 1.0:
+#   ros2 run tf2_ros tf2_echo odom base_link        # prints yaw (RPY) in degrees
+# rotate the robot a precise known angle (e.g. 180 deg against a wall, or several 90 deg
+# steps and sum), read the reported yaw change, then set:
+#   GYRO_SCALE = true_angle / reported_angle        # >1 if it UNDER-rotates, <1 if over
+# 2026-06 calib: spun to a believed 180 deg, measured 210 deg actual -> 210/180 = 1.167
+# (gyro under-reports ~14%; heading is gyro-only, so this directly de-doubles spins).
+GYRO_SCALE = 1.167
 # Pitch scan-gate: drop /scan whenever the balancing body is tilted more than this
 # (rad). A tilted 2D lidar plane measures walls at the wrong range and smears the map.
 PITCH_GATE = 0.09  # ~5 deg
@@ -32,7 +42,7 @@ PITCH_GATE = 0.09  # ~5 deg
 # Stamping the scan this far in the PAST makes slam look up the heading the
 # robot really had mid-sweep, cancelling the overshoot. Tune: if walls still
 # lead the turn, raise it; if they now lag, lower it. Set 0.0 to disable.
-SCAN_LATENCY = 0.08
+SCAN_LATENCY = 0.01
 # ---------------------------------------------------------------------------------
 
 
@@ -146,7 +156,7 @@ class UDPLidarNode(Node):
 
         imu.angular_velocity.x = 0.0
         imu.angular_velocity.y = 0.0
-        imu.angular_velocity.z = float(odom["yaw_rate"]) * GYRO_SIGN
+        imu.angular_velocity.z = float(odom["yaw_rate"]) * GYRO_SIGN * GYRO_SCALE
         imu.angular_velocity_covariance[0] = 1e6    # roll rate unknown (not fused)
         imu.angular_velocity_covariance[4] = 1e6    # pitch rate unknown (not fused)
         imu.angular_velocity_covariance[8] = 0.002  # yaw-rate variance

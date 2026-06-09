@@ -111,8 +111,13 @@ def generate_launch_description():
                 'use_scan_barycenter': True,
                 'do_loop_closing': True,
                 'loop_search_maximum_distance': 3.0,
-                'loop_match_minimum_response_coarse': 0.35,
-                'loop_match_minimum_response_fine': 0.45,
+                'loop_match_minimum_response_coarse': 0.45,  # was 0.35: stricter pre-filter
+                'loop_match_minimum_response_fine': 0.55,    # was 0.45: only accept a HIGH-
+                                                             # confidence closure, so the
+                                                             # whole-map snap lands right
+                                                             # instead of leaving an angle
+                'loop_match_minimum_chain_size': 12,         # require a longer agreeing chain
+                                                             # of scans -> reject spurious loops
             }]
         ),
 

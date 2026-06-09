@@ -53,6 +53,12 @@ class WheelOdometryNode(Node):
         self.declare_parameter('odom_frame', 'odom')
         self.declare_parameter('base_frame', 'base_link')
         self.declare_parameter('max_dt', 0.5)  # s; skip integration across long gaps
+        # Glitch guards. A balancing robot moves <~ a few cm per sample, so any sample
+        # implying more is a bad packet (corrupt/duplicated UDP, stepper-counter wrap)
+        # or a tiny dt from two packets sharing a stamp. Left unguarded these spike the
+        # EKF's vx and teleport odom ~30 m out of the costmap mid-map (the run-killer).
+        self.declare_parameter('max_jump', 0.3)   # m; reject a per-wheel delta above this
+        self.declare_parameter('min_dt', 0.005)   # s; below this, twist (d/dt) is garbage
 
         steps_per_rev = self.get_parameter('steps_per_rev').value
         microstepping = self.get_parameter('microstepping').value
@@ -68,6 +74,8 @@ class WheelOdometryNode(Node):
         self.odom_frame = self.get_parameter('odom_frame').value
         self.base_frame = self.get_parameter('base_frame').value
         self.max_dt = self.get_parameter('max_dt').value
+        self.max_jump = self.get_parameter('max_jump').value
+        self.min_dt = self.get_parameter('min_dt').value
 
         # Metres of wheel travel per commanded microstep.
         self.dist_per_step = (math.pi * wheel_diameter) / (steps_per_rev * microstepping)
@@ -111,11 +119,23 @@ class WheelOdometryNode(Node):
         d_right = (right - self.prev_right) * self.right_sign * self.dist_per_step
         self.prev_left, self.prev_right, self.prev_t = left, right, t
 
-        # Guard against reordered / late packets and post-gap dt (a dropped run of
-        # packets leaves the absolute counts correct, but the instantaneous velocity
-        # over a huge dt would be meaningless): still advance the pose, but report
-        # zero twist rather than a garbage spike.
-        valid_dt = 0.0 < dt <= self.max_dt
+        # Glitch guard: a corrupt/duplicated packet or a stepper-counter wrap yields a
+        # huge one-tick delta that teleports the EKF (vx spike) and throws the robot out
+        # of the costmap (the sudden ~30 m odom jump mid-map). prev is already reseeded
+        # to the current counts above, so just drop this delta and report no motion --
+        # the absolute counts self-heal on the next sample.
+        if abs(d_left) > self.max_jump or abs(d_right) > self.max_jump:
+            self.get_logger().warn(
+                f"wheel-odom glitch rejected: d_left={d_left:.2f} m, "
+                f"d_right={d_right:.2f} m (> max_jump {self.max_jump} m)")
+            self.publish_odom(msg.header.stamp, 0.0, 0.0)
+            return
+
+        # Guard against reordered / late packets, post-gap dt (a dropped run of packets
+        # leaves the absolute counts correct, but the velocity over a huge dt is
+        # meaningless), and bunched packets sharing a stamp (tiny dt -> huge vx that
+        # would spike the EKF): still advance the pose, but report zero twist.
+        valid_dt = self.min_dt <= dt <= self.max_dt
 
         d_center = 0.5 * (d_left + d_right)
         d_theta = (d_right - d_left) / self.wheel_base
