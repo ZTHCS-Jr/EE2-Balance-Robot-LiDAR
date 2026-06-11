@@ -101,7 +101,7 @@ def generate_launch_description():
                 'mode': 'mapping',
                 'map_update_interval': 0.3,        # republish /map ~3 Hz for snappier RViz refresh
                 'minimum_travel_distance': 0.05,  # Update map every 5cm travelled
-                'minimum_travel_heading': 0.05,   # ~2.9 deg (was 0.1/5.7); finer scan cadence in turns -> less doubling
+                'minimum_travel_heading': 0.05,   # finer scan cadence hopefully reduces doubling
                 'minimum_time_interval': 0.1,     # throttle: <=5 scans/s processed 
                 'min_laser_range': 0.1,           # matches the scan range_min
                 'max_laser_range': 8.0,           # matches the scan range_max 

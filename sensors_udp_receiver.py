@@ -15,7 +15,7 @@ GYRO_SCALE = 1.167
 # Ignore scanes done at greater of 5 deg tilt angle
 PITCH_GATE = 0.09  # ~5 deg
 # Range around robot it doesn't detect as it sees the wire around it
-SELF_CLIP_RANGE = 0.10
+SELF_CLIP_RANGE = 0.15
 # Had an issue where the laser scan was too delayed so I measured the delay and modified the order the scans were updated to account for this
 SCAN_LATENCY = 0.0 
 
