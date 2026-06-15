@@ -20,14 +20,14 @@ from std_srvs.srv import SetBool
 from tf2_ros import Buffer, TransformListener
 
 import websockets
-
+import socket
 
 class FaceSeeker(Node):
     def __init__(self):
         super().__init__('face_seeker')
 
         # variables
-        self.server_ws = 'ws://10.232.9.34:8000/ws/ui'
+        self.server_ws = 'ws://192.168.0.20:8000/ws/ui'
         self.frame_w = 1000.0             # video width (bbox coord space)
         self.frame_h = 1000.0             # video height
         self.v_fwd = 0.15                 # m/s forward creep
@@ -61,6 +61,9 @@ class FaceSeeker(Node):
         self.create_service(SetBool, 'seek/enable', self._on_enable)
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
+
+        self.pi_ip='192.168.0.196'
+        self.audio_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
         # --- state ---
         self.enabled = False
@@ -340,6 +343,19 @@ class FaceSeeker(Node):
         total = sum(self.id_votes.values())
         registered = best != '__unknown__'
         name = best if registered else None
+
+        if registered:
+            audio_trigger="registered"
+        else:
+            audio_trigger="unregistered"
+        try:
+            self.audio_sock.sendto(
+                json.dumps({"audio": audio_trigger}).encode("utf-8"),
+                (self.pi_ip, 31416)
+            )
+        except Exception as e:
+            self.get_logger().error(f"audio trigger failed: {e}")
+
         self._mark(name)
         if registered:
             self.visited_names.add(name)
