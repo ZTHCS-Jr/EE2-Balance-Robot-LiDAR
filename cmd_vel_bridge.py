@@ -14,7 +14,7 @@ class CmdVelBridge(Node):
     def __init__(self):
         super().__init__('cmd_vel_bridge')
         
-        self.pi_ip = '192.168.0.196'
+        self.pi_ip = '10.232.9.80'
         self.pi_port = 31416
         self.stale_timeout = float(1) # Timeout count down
         rate = float(20.0) # Transmission rate

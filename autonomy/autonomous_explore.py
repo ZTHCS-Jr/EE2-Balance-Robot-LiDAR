@@ -27,7 +27,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument(
-            'pi_ip', default_value='10.140.43.80',
+            'pi_ip', default_value='10.232.9.80',
             description="Robot Pi LAN IP for UDP velocity commands (client.py :31416)"),
 
         # nav2 navigation stack (controller/planner/behavior/bt/costmaps/velocity_smoother).

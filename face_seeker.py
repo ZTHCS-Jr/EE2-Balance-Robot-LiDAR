@@ -27,7 +27,7 @@ class FaceSeeker(Node):
         super().__init__('face_seeker')
 
         # variables
-        self.server_ws = 'ws://192.168.0.20:8000/ws/ui'
+        self.server_ws = 'ws://10.232.9.34:8000/ws/ui'
         self.frame_w = 1000.0             # video width (bbox coord space)
         self.frame_h = 1000.0             # video height
         self.v_fwd = 0.15                 # m/s forward creep
@@ -59,7 +59,7 @@ class FaceSeeker(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        self.pi_ip='192.168.0.196'
+        self.pi_ip='10.232.9.80'
         self.audio_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
         # --- state ---

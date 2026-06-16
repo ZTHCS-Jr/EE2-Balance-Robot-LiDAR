@@ -92,7 +92,7 @@ class UDPSensorNode(Node):
                     continue
 
         msg.ranges = ranges
-        self.lidar_pub_.publish(msg)
+        self.scan_pub.publish(msg)
 
     def publish_odom(self, odom):
         # Packet: {"t_ms", "left_steps", "right_steps", "yaw_rate", "pitch"}.
