@@ -35,7 +35,6 @@ class FaceSeeker(Node):
         self.w_search = 0.2               # rad/s search-rotate speed (slow so faces linger)
         self.accel_v = 0.3                # m/s^2 ramp; smooths lurches (balance bot)
         self.accel_w = 1.0                # rad/s^2 ramp
-        self.steer_gain = 0.8             # bbox x-error -> turn rate
         self.turn_sign = -1.0             # physical turn dir: -1 if +angular.z turns the robot RIGHT
         self.w_approach = 0.2             # rad/s max turn while approaching (low -> no lag overshoot)
         self.min_face_frac = 0.15         # ignore boxes shorter than this*frame_h (skips far/background faces)
@@ -47,9 +46,7 @@ class FaceSeeker(Node):
         self.min_valid_range = 0.20       # m; ignore closer returns (the robot's own structure)
         self.avoid_dist = 0.30            # m; wander avoidance (> SELF_CLIP 0.20)
         self.clear_factor = 1.5           # keep turning until front > avoid_dist*this
-        self.visit_radius = 0.6           # m; don't re-greet within this of a marked spot
         self.detection_stale = 1.5        # s; CPU detector is slow, tolerate gaps
-        self.fresh_for_steer = 0.6        # s; only steer/commit on detections fresher than this
         self.lost_timeout = 2.5           # s; no target in APPROACH -> back to search
         self.search_rotate_time = 10.0    # s; scan-in-place before wandering
         self.wander_time = 4.0            # s; drive before scanning again
@@ -81,7 +78,6 @@ class FaceSeeker(Node):
         self.avoid_dir = 1.0
         self.id_votes = {}               # name -> count, tallied during IDENTIFY
         self.visited_names = set()       # greeted registered people (dedup by name)
-        self.visited_locs = []           # greeted locations (dedup unknowns by place)
         self.markers = MarkerArray()
         self.marker_id = 0
         self.last_diag = 0.0
@@ -196,13 +192,6 @@ class FaceSeeker(Node):
         except Exception:
             return None
 
-    def _near_visited(self):
-        p = self._pose()
-        if p is None:
-            return False
-        return any(math.hypot(p[0] - vx, p[1] - vy) < self.visit_radius
-                   for vx, vy in self.visited_locs)
-
     def _pick_target(self, faces):
         # largest big-enough face whose name we haven't greeted yet
         best, best_area = None, 0.0
@@ -268,9 +257,9 @@ class FaceSeeker(Node):
 
     def _search_rotate(self, faces):
         target = self._pick_target(faces)
-        if target is not None and not self._near_visited():
-            # face in view: stop sweeping past it; commit only on a fresh fix
-            if time.time() - self.faces_stamp < self.fresh_for_steer:
+        if target is not None:
+            # face in view: stop sweeping past it; commit only on a fresh fix (<0.6s old)
+            if time.time() - self.faces_stamp < 0.6:
                 self._enter('APPROACH')
             else:
                 self._send(0.0, 0.0)
@@ -282,8 +271,7 @@ class FaceSeeker(Node):
 
     def _search_wander(self, faces, front):
         target = self._pick_target(faces)
-        if (target is not None and not self._near_visited()
-                and time.time() - self.faces_stamp < self.fresh_for_steer):
+        if target is not None and time.time() - self.faces_stamp < 0.6:
             self._enter('APPROACH')
             return
         # hysteresis: start avoiding below avoid_dist, keep turning until clearly open
@@ -303,7 +291,8 @@ class FaceSeeker(Node):
     
     def _approach(self, faces):
         target = self._pick_target(faces)
-        fresh = target is not None and (time.time() - self.faces_stamp) < self.fresh_for_steer
+        # only act on a detection fresher than 0.6s; never chase a stale bbox
+        fresh = target is not None and (time.time() - self.faces_stamp) < 0.6
         if not fresh:                            # no fresh fix: hold still, don't chase a stale bbox
             self._send(0.0, 0.0)
             if time.time() - self.state_t0 > self.lost_timeout:
@@ -320,7 +309,7 @@ class FaceSeeker(Node):
             self._enter('IDENTIFY')
             return
 
-        raw_w = -self.steer_gain * x_err
+        raw_w = -0.8 * x_err                         # 0.8: bbox x-error -> turn rate
         w = max(-self.w_approach, min(self.w_approach, raw_w))
         v = self.v_fwd * (1.0 - 0.5 * abs(x_err))
         
@@ -381,9 +370,6 @@ class FaceSeeker(Node):
         x, y, yaw = p
         d = min(self._sector_min(self.front_angle), self.approach_stop_dist)
         px, py = x + d * math.cos(yaw), y + d * math.sin(yaw)
-        if any(math.hypot(px - vx, py - vy) < self.visit_radius for vx, vy in self.visited_locs):
-            return                               # already marked this spot
-        self.visited_locs.append((px, py))
         registered = name is not None
         dot = Marker()
         dot.header.frame_id = 'map'
