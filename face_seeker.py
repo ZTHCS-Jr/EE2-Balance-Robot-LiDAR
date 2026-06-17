@@ -27,7 +27,7 @@ class FaceSeeker(Node):
         super().__init__('face_seeker')
 
         # variables
-        self.server_ws = 'ws://10.232.9.34:8000/ws/ui'
+        self.server_ws = 'ws://10.232.9.141:8000/ws/ui'
         self.frame_w = 1000.0             # video width (bbox coord space)
         self.frame_h = 1000.0             # video height
         self.v_fwd = 0.15                 # m/s forward creep
