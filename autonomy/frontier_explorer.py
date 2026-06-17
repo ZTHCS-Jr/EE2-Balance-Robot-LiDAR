@@ -39,15 +39,16 @@ class FrontierExplorer(Node):
         # Motion limits (conservative for a balancing robot).
         self.declare_parameter('control_rate', 5.0)
         self.declare_parameter('v_fwd', 0.07)       # m/s forward creep (slow -> less scan smear)
-        self.declare_parameter('w_max', 0.3)        # rad/s max turn (slow -> less rotational smear)
-        self.declare_parameter('w_gain', 1.2)       # heading P-gain
+        self.declare_parameter('w_max', 0.2)        # rad/s max turn (slow -> less rotational smear)
+        self.declare_parameter('w_gain', 0.8)       # heading P-gain (gentle -> small abrupt turn steps)
+        self.declare_parameter('turn_sign', -1.0)   # physical turn dir: -1 if +angular.z turns the robot RIGHT (matches face_seeker)
         self.declare_parameter('heading_tol', 0.4)  # rad; above -> rotate in place
         self.declare_parameter('goal_tol', 0.2)     # m; frontier considered reached
-        self.declare_parameter('settle_time', 0.4)  # s; hold still after a turn for a clean scan
+        self.declare_parameter('settle_time', 0.7)  # s; hold still after a turn for a clean scan
 
         # Obstacle avoidance (front sector only). Kept tight so a sub-metre corridor's
         # SIDE walls don't read as a frontal obstacle (which made the robot rock in place).
-        self.declare_parameter('stop_dist', 0.20)       # m; front-sector obstacle -> stop & turn
+        self.declare_parameter('stop_dist', 0.25)       # m; front-sector obstacle -> stop & turn
                                                          # (must be > receiver SELF_CLIP_RANGE 0.20)
         self.declare_parameter('front_angle', 0.5)      # rad half-width of front sector (~29 deg)
         # Wide hard-stop arc: catches a head-on wall even if the lidar's forward is a little
@@ -75,6 +76,7 @@ class FrontierExplorer(Node):
         self.v_fwd = g('v_fwd').value
         self.w_max = g('w_max').value
         self.w_gain = g('w_gain').value
+        self.turn_sign = g('turn_sign').value
         self.heading_tol = g('heading_tol').value
         self.goal_tol = g('goal_tol').value
         self.settle_time = g('settle_time').value
@@ -142,6 +144,8 @@ class FrontierExplorer(Node):
     def _publish(self, v, w):
         t = Twist()
         t.linear.x = float(v)
+        # turn_sign maps our +w (CCW per ROS) to the robot's actual turn direction
+        w = self.turn_sign * w
         t.angular.z = float(max(-self.w_max, min(self.w_max, w)))
         self.cmd_pub.publish(t)
 
@@ -157,11 +161,12 @@ class FrontierExplorer(Node):
     def _front_obstacle(self):
         """Inspect /scan ahead of the robot.
 
-        Returns (front_min, near_min, turn_sign, nearest_bearing):
+        Returns (front_min, near_min, open_dir, nearest_bearing):
           front_min       -- nearest range within +/-front_angle of forward (normal slow/turn)
           near_min        -- nearest range within +/-emergency_angle (wide hard-stop arc; catches
                              head-on walls even if the lidar forward is a little misaligned)
-          turn_sign       -- +1 (left/CCW) or -1 (right) toward more open space
+          open_dir        -- +1 (left/CCW) or -1 (right) toward more open space (ROS convention;
+                             _publish applies turn_sign to convert to the robot's physical direction)
           nearest_bearing -- bearing of the closest return in the wide arc (rad; 0 = forward)
         scan_forward_offset shifts the angle reference if the lidar 0 deg is not along base_link +x.
         """
@@ -190,8 +195,8 @@ class FrontierExplorer(Node):
         right = valid & (ang < -0.2) & (ang > -1.6)
         left_clear = r[left].mean() if np.any(left) else 0.0
         right_clear = r[right].mean() if np.any(right) else 0.0
-        turn_sign = 1.0 if left_clear >= right_clear else -1.0  # +1 = turn left (CCW)
-        return front_min, near_min, turn_sign, nearest_bearing
+        open_dir = 1.0 if left_clear >= right_clear else -1.0  # +1 = turn left (CCW)
+        return front_min, near_min, open_dir, nearest_bearing
 
     def _path_clear(self, p0, p1, info, occ):
         """True if the straight line p0->p1 (world m) crosses no occupied cell."""
@@ -294,7 +299,7 @@ class FrontierExplorer(Node):
             return
 
         # Reactive obstacle avoidance takes priority.
-        front_min, near_min, turn_sign, bearing = self._front_obstacle()
+        front_min, near_min, open_dir, bearing = self._front_obstacle()
         if self.debug:
             self.get_logger().info(
                 f"front_min={front_min:.2f}m near_min={near_min:.2f}m "
@@ -305,7 +310,7 @@ class FrontierExplorer(Node):
             # Latch the turn direction on entering avoidance and hold it until the path
             # clears, so we don't oscillate left/right (rock) in a symmetric corridor.
             if self._avoid_dir == 0.0:
-                self._avoid_dir = turn_sign
+                self._avoid_dir = open_dir
             self._publish(0.0, self._avoid_dir * self.w_max)
             return
         self._avoid_dir = 0.0   # path ahead is clear
