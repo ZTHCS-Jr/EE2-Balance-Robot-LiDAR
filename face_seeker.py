@@ -27,7 +27,7 @@ class FaceSeeker(Node):
         super().__init__('face_seeker')
 
         # variables
-        self.server_ws = 'ws://10.232.9.141:8000/ws/ui'
+        self.server_ws = 'ws://192.168.0.20:8000/ws/ui'
         self.frame_w = 1000.0             # video width (bbox coord space)
         self.frame_h = 1000.0             # video height
         self.v_fwd = 0.15                 # m/s forward creep
@@ -59,7 +59,7 @@ class FaceSeeker(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        self.pi_ip='10.232.9.80'
+        self.pi_ip='192.168.0.196'
         self.audio_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
         # --- state ---
@@ -77,6 +77,7 @@ class FaceSeeker(Node):
         self.avoiding = False            # wander avoidance latch (with hysteresis)
         self.avoid_dir = 1.0
         self.id_votes = {}               # name -> count, tallied during IDENTIFY
+        self.id_languages={}
         self.visited_names = set()       # greeted registered people (dedup by name)
         self.markers = MarkerArray()
         self.marker_id = 0
@@ -305,6 +306,7 @@ class FaceSeeker(Node):
         if ahead < self.approach_stop_dist or h_frac >= self.approach_face_frac:
             self.get_logger().info(f'reached target (ahead={ahead:.2f}m h={h_frac:.2f}) -> identifying')
             self.id_votes = {}
+            self.id_languages={}
             self._send(0.0, 0.0)
             self._enter('IDENTIFY')
             return
@@ -322,6 +324,7 @@ class FaceSeeker(Node):
         if tgt is not None:
             key = tgt.get('name') or '__unknown__'
             self.id_votes[key] = self.id_votes.get(key, 0) + 1
+            self.id_languages[key] = tgt.get('language', 'English')
         if time.time() - self.state_t0 < self.identify_time:
             return                                   # keep watching for >= identify_time
         if not self.id_votes:                        # face vanished during the hold
@@ -332,6 +335,7 @@ class FaceSeeker(Node):
         total = sum(self.id_votes.values())
         registered = best != '__unknown__'
         name = best if registered else None
+        target_language = self.id_languages.get(best, "English")
 
         if registered:
             audio_trigger="registered"
@@ -339,7 +343,10 @@ class FaceSeeker(Node):
             audio_trigger="unregistered"
         try:
             self.audio_sock.sendto(
-                json.dumps({"audio": audio_trigger}).encode("utf-8"),
+                json.dumps({
+                    "audio": audio_trigger,
+                    "language": target_language
+                }).encode("utf-8"),
                 (self.pi_ip, 31416)
             )
         except Exception as e:

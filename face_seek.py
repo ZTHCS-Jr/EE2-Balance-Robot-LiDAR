@@ -15,8 +15,8 @@ def generate_launch_description():
     server = LaunchConfiguration('server')
 
     return LaunchDescription([
-        DeclareLaunchArgument('pi_ip', default_value='10.232.9.80', description='Robot Pi LAN IP for UDP velocity commands'),
-        DeclareLaunchArgument('server', default_value='10.232.9.141', description='Host running main.py (detections); laptop LAN IP'),
+        DeclareLaunchArgument('pi_ip', default_value='192.168.0.196', description='Robot Pi LAN IP for UDP velocity commands'),
+        DeclareLaunchArgument('server', default_value='192.168.0.20', description='Host running main.py (detections); laptop LAN IP'),
         ExecuteProcess(
             cmd=['python3', '-u', seeker, '--ros-args', '-p',['server_ws:=ws://', server, ':8000/ws/ui']],output='screen'),
         ExecuteProcess(
